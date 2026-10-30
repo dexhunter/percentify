@@ -1,4 +1,5 @@
 import functools
+import math
 import warnings
 from typing import Optional, Union
 
@@ -70,7 +71,7 @@ def _log10_p_from_r(r: float, n: int, p: Optional[float] = None) -> float:
 
     r = abs(float(r))
     df = n - 2
-    if not np.isfinite(r) or df < 1:
+    if not math.isfinite(r) or df < 1:
         return float("nan")
     if r >= 1.0:
         return float("-inf")  # a perfect correlation drives p below any bound
@@ -81,6 +82,21 @@ def _log10_p_from_r(r: float, n: int, p: Optional[float] = None) -> float:
     x = (1.0 - r) * (1.0 + r)  # == 1 - r**2, without the cancellation near |r|=1
 
     # I_x(a, b) = x**a / (a * B(a, b)) * 2F1(a, 1 - b; a + 1; x)
+    # Use compiled evaluations where the series converges before its cap.
+    # Avoid subnormal beta values; the hypergeometric form keeps tails in log space.
+    if type(a) is float and 0.0 < a <= 1_000_000.0 and x <= 0.999:
+        # For x <= 0.999, I_x <= x**a / sqrt(1-x). This bound
+        # skips beta values below the usable range of the direct path.
+        if a * (1.0 - x) <= 650.0:
+            ibeta = special.betainc(a, b, x)
+            if 1e-280 <= ibeta <= 1.0:
+                return math.log10(ibeta)
+        total = special.hyp2f1(a, b, a + 1.0, x)
+        if math.isfinite(total) and total > 0.0:
+            log_ibeta = (a * np.log(x) - math.log(a) - special.betaln(a, b)
+                         + math.log(total))
+            return float(log_ibeta / 2.302585092994046)
+
     term = total = 1.0
     for k in range(_LOG_P_MAX_TERMS):
         term *= (a + k) * (1.0 - b + k) * x / ((a + 1.0 + k) * (1.0 + k))
@@ -90,7 +106,7 @@ def _log10_p_from_r(r: float, n: int, p: Optional[float] = None) -> float:
 
     log_ibeta = (a * np.log(x) - np.log(a) - special.betaln(a, b)
                  + np.log(total))
-    return float(log_ibeta / np.log(10.0))
+    return float(log_ibeta / 2.302585092994046)
 
 
 def _is_polars(obj) -> bool:
